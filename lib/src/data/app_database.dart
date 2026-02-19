@@ -251,6 +251,7 @@ class AppDatabase {
   Future<void> addTodo({
     required String text,
     required String categoryId,
+    double priorityBonus = 0,
   }) async {
     try {
       final trimmed = text.trim();
@@ -264,7 +265,7 @@ class AppDatabase {
         'id': _uuid.v4(),
         'text': trimmed,
         'category_id': categoryId,
-        'sort_order': topSort,
+        'sort_order': topSort + priorityBonus,
         'is_completed': 0,
         'completed_at': null,
         'created_at': now,
@@ -328,6 +329,23 @@ class AppDatabase {
   Future<void> deleteTodo(String todoId) async {
     try {
       await _database.delete('todos', where: 'id = ?', whereArgs: [todoId]);
+    } on DatabaseException catch (error) {
+      throw AppDatabaseException.fromDatabaseException(error);
+    }
+  }
+
+  Future<void> restoreTodo(TodoItem todo) async {
+    try {
+      await _database.insert('todos', {
+        'id': todo.id,
+        'text': todo.text,
+        'category_id': todo.categoryId,
+        'sort_order': todo.sortOrder,
+        'is_completed': todo.isCompleted ? 1 : 0,
+        'completed_at': todo.completedAt,
+        'created_at': todo.createdAt,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      });
     } on DatabaseException catch (error) {
       throw AppDatabaseException.fromDatabaseException(error);
     }

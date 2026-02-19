@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:hotkey_manager/hotkey_manager.dart';
 import 'dart:async';
 
 import 'src/models/todo_item.dart';
@@ -22,41 +21,18 @@ class StackleApp extends StatefulWidget {
 
 class _StackleAppState extends State<StackleApp> {
   late final AppController _controller;
-  HotKey? _quickAddPrimaryHotKey;
 
   @override
   void initState() {
     super.initState();
     _controller = AppController();
     _controller.initialize();
-    _registerGlobalHotkeys();
   }
 
   @override
   void dispose() {
-    final primary = _quickAddPrimaryHotKey;
-    if (primary != null) {
-      hotKeyManager.unregister(primary);
-    }
     _controller.dispose();
     super.dispose();
-  }
-
-  Future<void> _registerGlobalHotkeys() async {
-    final primary = HotKey(
-      key: PhysicalKeyboardKey.keyK,
-      modifiers: <HotKeyModifier>[HotKeyModifier.meta, HotKeyModifier.shift],
-      scope: HotKeyScope.system,
-    );
-    _quickAddPrimaryHotKey = primary;
-
-    await hotKeyManager.unregisterAll();
-    await hotKeyManager.register(
-      primary,
-      keyDownHandler: (_) {
-        _controller.showQuickAddOverlay();
-      },
-    );
   }
 
   @override
@@ -183,6 +159,22 @@ class _StackleAppState extends State<StackleApp> {
             ),
           ),
         ),
+        snackBarTheme: SnackBarThemeData(
+          backgroundColor: const Color(0xFF151515),
+          contentTextStyle: const TextStyle(
+            fontFamily: 'Avenir Next',
+            color: Color(0xFFEDEDED),
+            fontSize: 12.5,
+            fontWeight: FontWeight.w500,
+          ),
+          actionTextColor: const Color(0xFFC8E1FF),
+          behavior: SnackBarBehavior.floating,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: const BorderSide(color: Color(0xFF2A2A2A)),
+          ),
+        ),
       ),
       home: AnimatedBuilder(
         animation: _controller,
@@ -262,11 +254,12 @@ class _MainScreen extends StatefulWidget {
 class _MainScreenState extends State<_MainScreen> {
   static const double _topBarHeight = 48;
   static const double _listVerticalPadding = 16;
-  static const double _todoRowExtent = 50;
+  static const double _todoRowExtent = 56;
   static const int _maxVisibleRows = 8;
   static const double _dialogMinWindowHeight = 460;
 
   String? _editingTodoId;
+  bool _isReordering = false;
   double? _lastRequestedWindowHeight;
   int? _lastWindowHeightTodoCount;
   Timer? _windowHeightDebounce;
@@ -291,8 +284,8 @@ class _MainScreenState extends State<_MainScreen> {
             _OpenQuickAddIntent(),
         SingleActivator(LogicalKeyboardKey.keyK, meta: true, shift: true):
             _OpenQuickAddIntent(),
-        SingleActivator(LogicalKeyboardKey.keyW, meta: true):
-            _CloseWindowIntent(),
+        SingleActivator(LogicalKeyboardKey.keyT, meta: true, shift: true):
+            _ToggleWindowIntent(),
         SingleActivator(LogicalKeyboardKey.delete): _DeleteSelectedTodoIntent(),
         SingleActivator(LogicalKeyboardKey.backspace):
             _DeleteSelectedTodoIntent(),
@@ -314,9 +307,9 @@ class _MainScreenState extends State<_MainScreen> {
               return null;
             },
           ),
-          _CloseWindowIntent: CallbackAction<_CloseWindowIntent>(
+          _ToggleWindowIntent: CallbackAction<_ToggleWindowIntent>(
             onInvoke: (_) {
-              _controller.hideMainWindow();
+              _controller.toggleMainWindow();
               return null;
             },
           ),
@@ -402,27 +395,28 @@ class _MainScreenState extends State<_MainScreen> {
       padding: EdgeInsets.zero,
       itemExtent: _todoRowExtent,
       itemCount: todos.length,
-      onReorder: (oldIndex, newIndex) {
-        _controller.reorderVisibleTodos(oldIndex, newIndex);
+      onReorderStart: (_) {
+        if (!_isReordering) {
+          setState(() => _isReordering = true);
+        }
+      },
+      onReorderEnd: (_) {},
+      onReorder: (oldIndex, newIndex) async {
+        await _controller.reorderVisibleTodos(oldIndex, newIndex);
+        if (mounted && _isReordering) {
+          setState(() => _isReordering = false);
+        }
       },
       proxyDecorator: (child, index, animation) {
-        return AnimatedBuilder(
-          animation: animation,
-          builder: (context, childWidget) {
-            return Transform.scale(
-              scale: 1.0 + (animation.value * 0.02),
-              child: Material(color: Colors.transparent, child: child),
-            );
-          },
-        );
+        return Material(color: Colors.transparent, child: child);
       },
       itemBuilder: (context, index) {
         final todo = todos[index];
-        return Padding(
+        return ReorderableDragStartListener(
           key: ValueKey(todo.id),
-          padding: const EdgeInsets.symmetric(vertical: 3),
-          child: ReorderableDragStartListener(
-            index: index,
+          index: index,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
             child: TodoRow(
               todo: todo,
               categories: _controller.categories,
@@ -432,6 +426,8 @@ class _MainScreenState extends State<_MainScreen> {
               onBeginEdit: () => setState(() => _editingTodoId = todo.id),
               onToggleCompleted: (value) =>
                   _controller.setTodoCompletion(todo, value),
+              priorityRank: index,
+              isReordering: _isReordering,
               onSubmitEdit: (nextText) async {
                 setState(() => _editingTodoId = null);
                 await _controller.updateTodoText(todo.id, nextText);
@@ -448,33 +444,33 @@ class _MainScreenState extends State<_MainScreen> {
   }
 
   Future<void> _deleteTodo(TodoItem todo) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete todo?'),
-        content: Text('"${todo.text}" will be removed permanently.'),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFF3A1E1E),
-              foregroundColor: const Color(0xFFFFD8D8),
-            ),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm != true) {
+    await _controller.deleteTodo(todo.id);
+    if (!mounted) {
       return;
     }
 
-    await _controller.deleteTodo(todo.id);
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar(reason: SnackBarClosedReason.dismiss);
+    final snackbarController = messenger.showSnackBar(
+      SnackBar(
+        content: Text('Deleted "${todo.text}"'),
+        duration: const Duration(seconds: 3),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () {
+            _controller.restoreTodo(todo);
+          },
+        ),
+      ),
+    );
+    unawaited(
+      Future<void>.delayed(const Duration(seconds: 3), () {
+        if (!mounted) {
+          return;
+        }
+        snackbarController.close();
+      }),
+    );
   }
 
   Future<void> _confirmDeleteSelectedTodo() async {
@@ -546,7 +542,7 @@ class _MainScreenState extends State<_MainScreen> {
 
   double _targetWindowHeightForTodoCount(int count) {
     const emptyStateHeight = 140.0;
-    const bottomSlack = 0.0;
+    const bottomSlack = 2.0;
 
     if (count <= 0) {
       return _topBarHeight + _listVerticalPadding + emptyStateHeight;
@@ -677,7 +673,7 @@ class _TopBar extends StatelessWidget {
               textAlign: TextAlign.left,
               style: theme.textTheme.labelLarge?.copyWith(
                 color: const Color(0xFFDADADA),
-                fontSize: 14,
+                fontSize: 15,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0.1,
                 height: 1.0,
@@ -801,7 +797,7 @@ class _EmptyState extends StatelessWidget {
           Text(
             inCategoryView
                 ? 'No todos in this category.'
-                : 'Add your first todo... Cmd+Shift+K',
+                : 'Add your first todo... Cmd+K',
             style: theme.textTheme.titleMedium,
           ),
           const SizedBox(height: 6),
@@ -939,6 +935,6 @@ class _OpenQuickAddIntent extends Intent {
   const _OpenQuickAddIntent();
 }
 
-class _CloseWindowIntent extends Intent {
-  const _CloseWindowIntent();
+class _ToggleWindowIntent extends Intent {
+  const _ToggleWindowIntent();
 }

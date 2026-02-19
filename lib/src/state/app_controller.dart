@@ -277,8 +277,12 @@ class AppController extends ChangeNotifier {
     }
 
     try {
-      final inboxId = await _inboxCategoryId();
-      await _database.addTodo(text: trimmed, categoryId: inboxId);
+      final draft = await _parseQuickAdd(trimmed);
+      await _database.addTodo(
+        text: draft.text,
+        categoryId: draft.categoryId,
+        priorityBonus: draft.priorityBonus,
+      );
       await _refreshData();
       _lockMessage = null;
       notifyListeners();
@@ -380,6 +384,17 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> restoreTodo(TodoItem todo) async {
+    try {
+      await _database.restoreTodo(todo);
+      await _refreshData();
+      _lockMessage = null;
+      notifyListeners();
+    } on AppDatabaseException catch (error) {
+      _handleOperationError(error);
+    }
+  }
+
   Future<void> reorderVisibleTodos(int oldIndex, int newIndex) async {
     if (_visibleTodos.length < 2) {
       return;
@@ -397,6 +412,7 @@ class AppController extends ChangeNotifier {
       return;
     }
 
+    final original = List<TodoItem>.from(_visibleTodos);
     final reordered = List<TodoItem>.from(_visibleTodos);
     final moved = reordered.removeAt(oldIndex);
     reordered.insert(newIndex, moved);
@@ -405,6 +421,10 @@ class AppController extends ChangeNotifier {
     final next = newIndex < reordered.length - 1
         ? reordered[newIndex + 1]
         : null;
+
+    // Optimistic UI update prevents post-drop snap/flicker while persistence runs.
+    _visibleTodos = reordered;
+    notifyListeners();
 
     try {
       if (_canUseFractionalOrdering(previous: previous, next: next)) {
@@ -417,11 +437,9 @@ class AppController extends ChangeNotifier {
           nextId: next?.id,
         );
       }
-
-      await _refreshData();
       _lockMessage = null;
-      notifyListeners();
     } on AppDatabaseException catch (error) {
+      _visibleTodos = original;
       _handleOperationError(error);
     }
   }
@@ -563,6 +581,10 @@ class AppController extends ChangeNotifier {
     await _nativeBridge.hideMainWindow();
   }
 
+  Future<void> toggleMainWindow() async {
+    await _nativeBridge.toggleMainWindow();
+  }
+
   Future<void> quitApplication() async {
     await _nativeBridge.quitApp();
   }
@@ -590,6 +612,48 @@ class AppController extends ChangeNotifier {
     return inbox.id;
   }
 
+  Future<_QuickAddDraft> _parseQuickAdd(String raw) async {
+    var text = raw.trim();
+    var priorityBonus = 0.0;
+
+    if (text.endsWith('!!')) {
+      text = text.substring(0, text.length - 2).trimRight();
+      priorityBonus = 700;
+    } else if (text.endsWith('!')) {
+      text = text.substring(0, text.length - 1).trimRight();
+      priorityBonus = 350;
+    }
+
+    var categories = _categories;
+    if (categories.isEmpty) {
+      categories = await _database.fetchCategories();
+    }
+
+    final splitIndex = text.indexOf(':');
+    if (splitIndex > 0 && splitIndex < text.length - 1) {
+      final possibleCategory = text.substring(0, splitIndex).trim();
+      final remainder = text.substring(splitIndex + 1).trim();
+
+      if (remainder.isNotEmpty) {
+        for (final category in categories) {
+          if (category.name.toLowerCase() == possibleCategory.toLowerCase()) {
+            return _QuickAddDraft(
+              text: remainder,
+              categoryId: category.id,
+              priorityBonus: priorityBonus,
+            );
+          }
+        }
+      }
+    }
+
+    return _QuickAddDraft(
+      text: text,
+      categoryId: await _inboxCategoryId(),
+      priorityBonus: priorityBonus,
+    );
+  }
+
   void _handleOperationError(AppDatabaseException error) {
     if (error.isLocked) {
       _lockMessage = error.message;
@@ -613,4 +677,16 @@ class AppController extends ChangeNotifier {
     _database.close();
     super.dispose();
   }
+}
+
+class _QuickAddDraft {
+  const _QuickAddDraft({
+    required this.text,
+    required this.categoryId,
+    required this.priorityBonus,
+  });
+
+  final String text;
+  final String categoryId;
+  final double priorityBonus;
 }

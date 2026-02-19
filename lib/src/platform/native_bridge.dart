@@ -39,6 +39,10 @@ class NativeBridge {
     await _invokeWithRetry<void>('hideMainWindow');
   }
 
+  Future<void> toggleMainWindow() async {
+    await _invokeWithRetry<void>('toggleMainWindow');
+  }
+
   Future<bool> isAccessibilityTrusted() async {
     final trusted = await _invokeWithRetry<bool>('isAccessibilityTrusted');
     return trusted ?? false;

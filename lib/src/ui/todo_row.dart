@@ -73,6 +73,8 @@ class TodoRow extends StatefulWidget {
     required this.onCancelEdit,
     required this.onCategoryChanged,
     required this.onDelete,
+    required this.priorityRank,
+    required this.isReordering,
   });
 
   final TodoItem todo;
@@ -86,6 +88,8 @@ class TodoRow extends StatefulWidget {
   final VoidCallback onCancelEdit;
   final ValueChanged<String> onCategoryChanged;
   final VoidCallback onDelete;
+  final int priorityRank;
+  final bool isReordering;
 
   @override
   State<TodoRow> createState() => _TodoRowState();
@@ -135,6 +139,29 @@ class _TodoRowState extends State<TodoRow> {
     } else {
       rowColor = const Color(0xFF171717);
     }
+    final isTopPriority = widget.priorityRank < 3;
+    final accent = switch (widget.priorityRank) {
+      0 => const Color(0xFF5C91E8),
+      1 => const Color(0xFF52A88A),
+      2 => const Color(0xFFB58A52),
+      _ => const Color(0x00000000),
+    };
+
+    final showPriorityAccent = isTopPriority && !widget.isReordering;
+    final rowDecoration = BoxDecoration(
+      color: rowColor,
+      borderRadius: BorderRadius.circular(10),
+      border: Border.all(color: const Color(0xFF2A2A2A)),
+      boxShadow: showPriorityAccent
+          ? <BoxShadow>[
+              BoxShadow(
+                color: accent.withValues(alpha: 0.18),
+                blurRadius: 10,
+                spreadRadius: 0.5,
+              ),
+            ]
+          : null,
+    );
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
@@ -148,22 +175,45 @@ class _TodoRowState extends State<TodoRow> {
           duration: const Duration(milliseconds: 180),
           opacity: widget.todo.isCompleted ? 0.55 : 1,
           child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
+            duration: widget.isReordering
+                ? Duration.zero
+                : const Duration(milliseconds: 180),
             curve: Curves.easeOutCubic,
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-            decoration: BoxDecoration(
-              color: rowColor,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: const Color(0xFF2A2A2A)),
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+            decoration: rowDecoration,
             child: Row(
               children: <Widget>[
-                Checkbox(
-                  value: widget.todo.isCompleted,
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  onChanged: (value) =>
-                      widget.onToggleCompleted(value ?? false),
+                AnimatedContainer(
+                  duration: widget.isReordering
+                      ? Duration.zero
+                      : const Duration(milliseconds: 180),
+                  curve: Curves.easeOutCubic,
+                  width: 2,
+                  height: 20,
+                  margin: const EdgeInsets.only(right: 8),
+                  decoration: BoxDecoration(
+                    color: showPriorityAccent
+                        ? accent.withValues(alpha: 0.92)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                TweenAnimationBuilder<double>(
+                  tween: Tween<double>(
+                    begin: 1,
+                    end: widget.todo.isCompleted ? 0.95 : 1,
+                  ),
+                  duration: const Duration(milliseconds: 140),
+                  curve: Curves.easeOutCubic,
+                  builder: (context, scale, child) =>
+                      Transform.scale(scale: scale, child: child),
+                  child: Checkbox(
+                    value: widget.todo.isCompleted,
+                    visualDensity: VisualDensity.compact,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    onChanged: (value) =>
+                        widget.onToggleCompleted(value ?? false),
+                  ),
                 ),
                 const SizedBox(width: 6),
                 Expanded(child: _buildText(theme)),
@@ -228,8 +278,9 @@ class _TodoRowState extends State<TodoRow> {
           : TextDecoration.none,
       decorationThickness: 2,
       color: theme.colorScheme.onSurface,
-      fontSize: 13.5,
-      height: 1.15,
+      fontSize: 13,
+      fontWeight: FontWeight.w500,
+      height: 1.12,
     );
 
     return Align(
@@ -284,8 +335,10 @@ class _TodoRowState extends State<TodoRow> {
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(999),
-          color: swatch.background,
-          border: Border.all(color: swatch.border),
+          color: swatch.background.withValues(alpha: _hovered ? 1 : 0.8),
+          border: Border.all(
+            color: swatch.border.withValues(alpha: _hovered ? 1 : 0.78),
+          ),
         ),
         child: Text(
           widget.todo.categoryName,

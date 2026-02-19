@@ -2,9 +2,11 @@ import Cocoa
 import FlutterMacOS
 import Carbon.HIToolbox
 import ApplicationServices
+import QuartzCore
 
 private let hotKeySignature: OSType = 0x53544B4C // STKL
-private let primaryHotKeyIdentifier: UInt32 = 1
+private let quickAddHotKeyIdentifier: UInt32 = 1
+private let toggleWindowHotKeyIdentifier: UInt32 = 2
 
 private let hotKeyEventHandler: EventHandlerUPP = { _, event, userData in
   guard let userData else {
@@ -34,13 +36,21 @@ private final class QuickAddTextField: NSTextField {
 
 @main
 class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
+  private enum WindowAnimationStyle {
+    case main
+    case quickAdd
+  }
+
   private var statusItem: NSStatusItem?
   private let statusMenu = NSMenu()
   private var toggleWindowMenuItem: NSMenuItem?
+  private var hotkeyStatusMenuItem: NSMenuItem?
+  private var hotkeyDiagnosticsMenuItem: NSMenuItem?
 
   private var methodChannel: FlutterMethodChannel?
 
-  private var hotKeyRef: EventHotKeyRef?
+  private var quickAddHotKeyRef: EventHotKeyRef?
+  private var toggleWindowHotKeyRef: EventHotKeyRef?
   private var hotKeyHandlerRef: EventHandlerRef?
   private var localHotKeyMonitor: Any?
   private var globalHotKeyMonitor: Any?
@@ -49,22 +59,39 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
   private weak var flutterViewController: FlutterViewController?
   private var quickAddPanel: NSPanel?
   private weak var quickAddField: QuickAddTextField?
+  private var startupHotkeyRetryWorkItems: [DispatchWorkItem] = []
+
+  private var quickAddRegistrationStatus: OSStatus = -9999
+  private var toggleRegistrationStatus: OSStatus = -9999
+  private var hotkeyHandlerInstalled = false
+  private var fallbackQuickAddEnabled = false
+  private var fallbackToggleEnabled = false
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     super.applicationDidFinishLaunching(notification)
 
     requestAccessibilityPermissionIfNeeded()
+    installCloseWindowCommandShortcut()
     setupStatusItem()
-    registerGlobalHotKey()
+    refreshGlobalHotkeys()
     ensureFlutterBindingsReady()
 
     // The Flutter window can be created after launch on some runtimes.
     DispatchQueue.main.async { [weak self] in
       self?.ensureFlutterBindingsReady()
+      self?.installCloseWindowCommandShortcut()
       self?.setupStatusItem()
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
       self?.presentGlobalHotkeyPermissionHelpIfNeeded()
+    }
+    scheduleStartupHotkeyRetries()
+  }
+
+  override func applicationDidBecomeActive(_ notification: Notification) {
+    super.applicationDidBecomeActive(notification)
+    if shouldRetryHotkeys {
+      refreshGlobalHotkeys()
     }
   }
 
@@ -77,20 +104,8 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
   }
 
   override func applicationWillTerminate(_ notification: Notification) {
-    if let hotKeyRef {
-      UnregisterEventHotKey(hotKeyRef)
-    }
-
-    if let hotKeyHandlerRef {
-      RemoveEventHandler(hotKeyHandlerRef)
-    }
-
-    if let localHotKeyMonitor {
-      NSEvent.removeMonitor(localHotKeyMonitor)
-    }
-    if let globalHotKeyMonitor {
-      NSEvent.removeMonitor(globalHotKeyMonitor)
-    }
+    cancelStartupHotkeyRetries()
+    clearHotkeyRegistrations()
 
     super.applicationWillTerminate(notification)
   }
@@ -180,6 +195,11 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
       case "hideMainWindow":
         self.runOnMain {
           self.hideMainWindow()
+          result(nil)
+        }
+      case "toggleMainWindow":
+        self.runOnMain {
+          self.toggleMainWindowVisibility()
           result(nil)
         }
       case "setMainWindowHeight":
@@ -278,17 +298,96 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     let quickAddItem = NSMenuItem(title: "Quick Add...", action: #selector(showQuickAddFromMenu), keyEquivalent: "")
     quickAddItem.target = self
 
+    let retryHotkeysItem = NSMenuItem(title: "Retry Hotkeys", action: #selector(retryHotkeysFromMenu), keyEquivalent: "")
+    retryHotkeysItem.target = self
+
+    let diagnosticsItem = NSMenuItem(title: "Show Hotkey Diagnostics…", action: #selector(showHotkeyDiagnostics), keyEquivalent: "")
+    diagnosticsItem.target = self
+    hotkeyDiagnosticsMenuItem = diagnosticsItem
+
+    let statusItem = NSMenuItem(title: "Hotkeys: initializing…", action: nil, keyEquivalent: "")
+    statusItem.isEnabled = false
+    hotkeyStatusMenuItem = statusItem
+
     let quitItem = NSMenuItem(title: "Quit", action: #selector(quitFromMenu), keyEquivalent: "q")
     quitItem.target = self
 
     statusMenu.removeAllItems()
     statusMenu.addItem(toggleItem)
     statusMenu.addItem(quickAddItem)
+    statusMenu.addItem(retryHotkeysItem)
+    statusMenu.addItem(diagnosticsItem)
+    statusMenu.addItem(statusItem)
     statusMenu.addItem(NSMenuItem.separator())
     statusMenu.addItem(quitItem)
     toggleWindowMenuItem = toggleItem
 
     updateToggleWindowMenuTitle()
+    updateHotkeyStatusMenuTitle()
+  }
+
+  private func refreshGlobalHotkeys() {
+    clearHotkeyRegistrations()
+    registerGlobalHotKey()
+  }
+
+  private var shouldRetryHotkeys: Bool {
+    return quickAddRegistrationStatus != noErr ||
+      toggleRegistrationStatus != noErr ||
+      !hotkeyHandlerInstalled
+  }
+
+  private func scheduleStartupHotkeyRetries() {
+    cancelStartupHotkeyRetries()
+    let retryDelays: [TimeInterval] = [0.8, 1.6, 2.6, 4.0]
+    for delay in retryDelays {
+      let workItem = DispatchWorkItem { [weak self] in
+        guard let self else {
+          return
+        }
+        if self.shouldRetryHotkeys {
+          self.refreshGlobalHotkeys()
+        }
+      }
+      startupHotkeyRetryWorkItems.append(workItem)
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+  }
+
+  private func cancelStartupHotkeyRetries() {
+    for workItem in startupHotkeyRetryWorkItems {
+      workItem.cancel()
+    }
+    startupHotkeyRetryWorkItems.removeAll()
+  }
+
+  private func clearHotkeyRegistrations() {
+    if let quickAddHotKeyRef {
+      UnregisterEventHotKey(quickAddHotKeyRef)
+      self.quickAddHotKeyRef = nil
+    }
+    if let toggleWindowHotKeyRef {
+      UnregisterEventHotKey(toggleWindowHotKeyRef)
+      self.toggleWindowHotKeyRef = nil
+    }
+    if let hotKeyHandlerRef {
+      RemoveEventHandler(hotKeyHandlerRef)
+      self.hotKeyHandlerRef = nil
+    }
+    if let localHotKeyMonitor {
+      NSEvent.removeMonitor(localHotKeyMonitor)
+      self.localHotKeyMonitor = nil
+    }
+    if let globalHotKeyMonitor {
+      NSEvent.removeMonitor(globalHotKeyMonitor)
+      self.globalHotKeyMonitor = nil
+    }
+    hotkeyHandlerInstalled = false
+    fallbackQuickAddEnabled = false
+    fallbackToggleEnabled = false
+    quickAddRegistrationStatus = -9999
+    toggleRegistrationStatus = -9999
+    updateHotkeyStatusMenuTitle()
   }
 
   private func runOnMain(_ block: @escaping () -> Void) {
@@ -299,24 +398,75 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     DispatchQueue.main.async(execute: block)
   }
 
+  private func installCloseWindowCommandShortcut() {
+    guard let mainMenu = NSApp.mainMenu else {
+      return
+    }
+
+    // Prevent duplicate insertion across relaunch hooks.
+    if mainMenu.items
+      .compactMap({ $0.submenu })
+      .flatMap({ $0.items })
+      .contains(where: { $0.action == #selector(closeMainWindowFromMenu(_:)) }) {
+      return
+    }
+
+    let closeItem = NSMenuItem(
+      title: "Close Window",
+      action: #selector(closeMainWindowFromMenu(_:)),
+      keyEquivalent: "w"
+    )
+    closeItem.keyEquivalentModifierMask = [.command]
+    closeItem.target = self
+
+    if let windowMenuItem = mainMenu.items.first(where: { $0.title == "Window" }),
+       let windowSubmenu = windowMenuItem.submenu {
+      windowSubmenu.insertItem(closeItem, at: 0)
+    } else if let appMenu = mainMenu.items.first?.submenu {
+      appMenu.addItem(NSMenuItem.separator())
+      appMenu.addItem(closeItem)
+    }
+  }
+
   private func registerGlobalHotKey() {
     let target = GetApplicationEventTarget()
-    let primaryHotKeyID = EventHotKeyID(signature: hotKeySignature, id: primaryHotKeyIdentifier)
+    let quickAddHotKeyID = EventHotKeyID(signature: hotKeySignature, id: quickAddHotKeyIdentifier)
+    let toggleWindowHotKeyID = EventHotKeyID(signature: hotKeySignature, id: toggleWindowHotKeyIdentifier)
 
-    let primaryStatus = RegisterEventHotKey(
+    let quickAddStatus = RegisterEventHotKey(
       UInt32(kVK_ANSI_K),
-      UInt32(cmdKey) | UInt32(shiftKey),
-      primaryHotKeyID,
+      UInt32(cmdKey) | UInt32(controlKey) | UInt32(optionKey),
+      quickAddHotKeyID,
       target,
       0,
-      &hotKeyRef
+      &quickAddHotKeyRef
     )
 
-    if primaryStatus != noErr {
-      NSLog("Stackle: global hotkey registration failed. Cmd+Shift+K status=\(primaryStatus)")
+    let toggleWindowStatus = RegisterEventHotKey(
+      UInt32(kVK_ANSI_P),
+      UInt32(cmdKey) | UInt32(controlKey) | UInt32(optionKey),
+      toggleWindowHotKeyID,
+      target,
+      0,
+      &toggleWindowHotKeyRef
+    )
+    quickAddRegistrationStatus = quickAddStatus
+    toggleRegistrationStatus = toggleWindowStatus
+
+    let quickAddRegistered = quickAddStatus == noErr
+    let toggleRegistered = toggleWindowStatus == noErr
+    if !quickAddRegistered || !toggleRegistered {
+      NSLog("Stackle: global hotkey registration result. Ctrl+Option+Cmd+K status=\(quickAddStatus), Ctrl+Option+Cmd+P status=\(toggleWindowStatus)")
       NSLog("Stackle: accessibility trusted = \(AXIsProcessTrusted())")
-      requestAccessibilityPermissionIfNeeded()
-      installHotKeyMonitorsFallback()
+      if !AXIsProcessTrusted() {
+        requestAccessibilityPermissionIfNeeded()
+      }
+    }
+    if !quickAddRegistered && !toggleRegistered {
+      hotkeyHandlerInstalled = false
+      fallbackQuickAddEnabled = false
+      fallbackToggleEnabled = false
+      updateHotkeyStatusMenuTitle()
       return
     }
 
@@ -334,66 +484,118 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
       &hotKeyHandlerRef
     )
 
-    if hotKeyHandlerRef == nil {
-      NSLog("Stackle: hotkey handler install failed; using local fallback")
+    let handlerInstalled = hotKeyHandlerRef != nil
+    if !handlerInstalled {
+      NSLog("Stackle: hotkey handler install failed")
       NSLog("Stackle: accessibility trusted = \(AXIsProcessTrusted())")
       requestAccessibilityPermissionIfNeeded()
-      installHotKeyMonitorsFallback()
     } else {
-      NSLog("Stackle: global hotkey active. Cmd+Shift+K status=\(primaryStatus)")
+      NSLog("Stackle: global hotkeys active. Ctrl+Option+Cmd+K status=\(quickAddStatus), Ctrl+Option+Cmd+P status=\(toggleWindowStatus)")
       NSLog("Stackle: accessibility trusted = \(AXIsProcessTrusted())")
-      installHotKeyMonitorsFallback()
     }
+    hotkeyHandlerInstalled = handlerInstalled
+
+    let needFallbackQuickAdd = !quickAddRegistered || !handlerInstalled
+    let needFallbackToggle = !toggleRegistered || !handlerInstalled
+    installHotKeyMonitorsFallback(
+      enableQuickAdd: needFallbackQuickAdd,
+      enableToggle: needFallbackToggle
+    )
+    updateHotkeyStatusMenuTitle()
   }
 
-  private func installHotKeyMonitorsFallback() {
+  private func installHotKeyMonitorsFallback(
+    enableQuickAdd: Bool,
+    enableToggle: Bool
+  ) {
+    fallbackQuickAddEnabled = enableQuickAdd
+    fallbackToggleEnabled = enableToggle
+    if !enableQuickAdd && !enableToggle {
+      if let localHotKeyMonitor {
+        NSEvent.removeMonitor(localHotKeyMonitor)
+        self.localHotKeyMonitor = nil
+      }
+      if let globalHotKeyMonitor {
+        NSEvent.removeMonitor(globalHotKeyMonitor)
+        self.globalHotKeyMonitor = nil
+      }
+      updateHotkeyStatusMenuTitle()
+      return
+    }
+
     if localHotKeyMonitor == nil {
       localHotKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
         guard let self else {
           return event
         }
-        if self.isQuickAddShortcut(event) {
+        if enableQuickAdd && self.isFallbackQuickAddShortcut(event) {
           self.showQuickAddPanel()
+          return nil
+        }
+        if enableToggle && self.isFallbackToggleShortcut(event) {
+          self.toggleMainWindowVisibility()
           return nil
         }
         return event
       }
     }
 
-    if globalHotKeyMonitor != nil {
-      return
-    }
-
-    globalHotKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-      guard let self else {
-        return
-      }
-      if self.isQuickAddShortcut(event) {
-        self.runOnMain {
-          self.showQuickAddPanel()
+    if globalHotKeyMonitor == nil {
+      globalHotKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        guard let self else {
+          return
+        }
+        if enableQuickAdd && self.isFallbackQuickAddShortcut(event) {
+          self.runOnMain {
+            self.showQuickAddPanel()
+          }
+        } else if enableToggle && self.isFallbackToggleShortcut(event) {
+          self.runOnMain {
+            self.toggleMainWindowVisibility()
+          }
         }
       }
     }
+    updateHotkeyStatusMenuTitle()
   }
 
-  private func isQuickAddShortcut(_ event: NSEvent) -> Bool {
+  private func isFallbackQuickAddShortcut(_ event: NSEvent) -> Bool {
     let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-    let isCommandShift = flags.contains([.command, .shift])
-      && !flags.contains(.option)
-      && !flags.contains(.control)
-    let isCommandOption = flags.contains([.command, .option])
+    let isExpected = flags.contains([.command, .control, .option])
       && !flags.contains(.shift)
-      && !flags.contains(.control)
-    guard isCommandShift || isCommandOption else {
+    guard isExpected else {
       return false
     }
 
     if event.keyCode == UInt16(kVK_ANSI_K) {
       return true
     }
-
     let characters = event.charactersIgnoringModifiers?.lowercased() ?? ""
     return characters == "k"
+  }
+
+  private func isFallbackToggleShortcut(_ event: NSEvent) -> Bool {
+    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    let isExpected = flags.contains([.command, .control, .option])
+      && !flags.contains(.shift)
+    guard isExpected else {
+      return false
+    }
+
+    if event.keyCode == UInt16(kVK_ANSI_P) {
+      return true
+    }
+    let characters = event.charactersIgnoringModifiers?.lowercased() ?? ""
+    return characters == "p"
+  }
+
+  func hideMainWindowFromShortcut() {
+    guard quickAddPanel?.isVisible != true else {
+      return
+    }
+    if isMainWindowVisible {
+      hideMainWindow()
+    }
   }
 
   private func requestAccessibilityPermissionIfNeeded() {
@@ -414,8 +616,8 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
 
     let alert = NSAlert()
     alert.alertStyle = .informational
-    alert.messageText = "Enable Accessibility for Global Quick Add"
-    alert.informativeText = "Cmd+Shift+K works in background only after granting Accessibility permission to Stackle."
+    alert.messageText = "Enable Accessibility for Global Shortcuts"
+    alert.informativeText = "Ctrl+Option+Cmd+K and Ctrl+Option+Cmd+P work in background only after granting Accessibility permission to Stackle."
     alert.addButton(withTitle: "Open Settings")
     alert.addButton(withTitle: "Later")
 
@@ -453,9 +655,14 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     }
 
     if hotKeyID.signature == hotKeySignature
-      && hotKeyID.id == primaryHotKeyIdentifier {
+      && hotKeyID.id == quickAddHotKeyIdentifier {
       runOnMain { [weak self] in
         self?.showQuickAddPanel()
+      }
+    } else if hotKeyID.signature == hotKeySignature
+      && hotKeyID.id == toggleWindowHotKeyIdentifier {
+      runOnMain { [weak self] in
+        self?.toggleMainWindowVisibility()
       }
     }
   }
@@ -495,8 +702,36 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     showQuickAddPanel()
   }
 
+  @objc private func retryHotkeysFromMenu() {
+    refreshGlobalHotkeys()
+  }
+
   @objc private func quitFromMenu() {
     NSApp.terminate(nil)
+  }
+
+  @objc private func closeMainWindowFromMenu(_ sender: Any?) {
+    hideMainWindowFromShortcut()
+  }
+
+  @objc private func showHotkeyDiagnostics() {
+    updateHotkeyStatusMenuTitle()
+    let alert = NSAlert()
+    alert.alertStyle = .informational
+    alert.messageText = "Stackle Hotkey Diagnostics"
+    alert.informativeText = """
+    Quick Add combo: Ctrl+Option+Cmd+K
+    Toggle combo: Ctrl+Option+Cmd+P
+    Accessibility trusted: \(AXIsProcessTrusted())
+    Quick Add register status: \(quickAddRegistrationStatus)
+    Toggle register status: \(toggleRegistrationStatus)
+    Event handler installed: \(hotkeyHandlerInstalled)
+    Fallback quick add enabled: \(fallbackQuickAddEnabled)
+    Fallback toggle enabled: \(fallbackToggleEnabled)
+    Bundle path: \(Bundle.main.bundlePath)
+    """
+    alert.addButton(withTitle: "OK")
+    alert.runModal()
   }
 
   private func showStatusContextMenu(from button: NSStatusBarButton) {
@@ -514,6 +749,24 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     }
   }
 
+  private func updateHotkeyStatusMenuTitle() {
+    let quickAddOk = quickAddRegistrationStatus == noErr
+    let toggleOk = toggleRegistrationStatus == noErr
+    let handlerOk = hotkeyHandlerInstalled
+
+    let state: String
+    if quickAddOk && toggleOk && handlerOk {
+      state = "Hotkeys: ready"
+    } else if quickAddOk || toggleOk {
+      state = "Hotkeys: partial"
+    } else {
+      state = "Hotkeys: unavailable"
+    }
+
+    hotkeyStatusMenuItem?.title =
+      "\(state) (Q:\(quickAddRegistrationStatus) T:\(toggleRegistrationStatus) H:\(handlerOk ? "1" : "0"))"
+  }
+
   private var isMainWindowVisible: Bool {
     guard let window = mainWindow else {
       return false
@@ -527,8 +780,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     }
     mainWindow = window
 
+    centerWindowOnScreen(window, targetSize: window.frame.size)
     NSApp.activate(ignoringOtherApps: true)
-    window.makeKeyAndOrderFront(nil)
+    animateWindowIn(window, style: .main)
     updateToggleWindowMenuTitle()
   }
 
@@ -560,12 +814,22 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
       height: clampedContentHeight
     )
     let targetFrame = window.frameRect(forContentRect: targetContentRect)
-
-    // Keep top edge stable while resizing height.
-    let delta = targetFrame.height - currentFrame.height
-    let newOrigin = NSPoint(x: currentFrame.origin.x, y: currentFrame.origin.y - delta)
     let newSize = NSSize(width: currentFrame.size.width, height: targetFrame.height)
-    window.setFrame(NSRect(origin: newOrigin, size: newSize), display: true, animate: false)
+    let centeredOrigin = centeredOriginOnScreen(for: window, size: newSize)
+    window.setFrame(NSRect(origin: centeredOrigin, size: newSize), display: true, animate: false)
+  }
+
+  private func centerWindowOnScreen(_ window: NSWindow, targetSize: NSSize) {
+    let origin = centeredOriginOnScreen(for: window, size: targetSize)
+    window.setFrameOrigin(origin)
+  }
+
+  private func centeredOriginOnScreen(for window: NSWindow, size: NSSize) -> NSPoint {
+    let screenFrame = (window.screen ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    return NSPoint(
+      x: screenFrame.midX - (size.width / 2),
+      y: screenFrame.midY - (size.height / 2)
+    )
   }
 
   private func showCreateDatabasePanel(result: @escaping FlutterResult) {
@@ -627,7 +891,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
   }
 
   private func hideMainWindow() {
-    mainWindow?.orderOut(nil)
+    if let window = mainWindow {
+      animateWindowOut(window, style: .main)
+    }
     updateToggleWindowMenuTitle()
   }
 
@@ -654,12 +920,80 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
 
     textField.stringValue = ""
     NSApp.activate(ignoringOtherApps: true)
-    panel.makeKeyAndOrderFront(nil)
+    animateWindowIn(panel, style: .quickAdd)
     panel.makeFirstResponder(textField)
   }
 
   private func closeQuickAddPanel() {
-    quickAddPanel?.orderOut(nil)
+    if let panel = quickAddPanel {
+      animateWindowOut(panel, style: .quickAdd)
+    }
+  }
+
+  private func animateWindowIn(_ window: NSWindow, style: WindowAnimationStyle) {
+    let timing: CAMediaTimingFunctionName = .easeOut
+    let duration: TimeInterval = style == .main ? 0.14 : 0.13
+    let fromScale: CGFloat = style == .main ? 0.985 : 0.94
+
+    if let contentView = window.contentView {
+      contentView.wantsLayer = true
+      contentView.layer?.removeAllAnimations()
+      contentView.layer?.transform = CATransform3DMakeScale(fromScale, fromScale, 1)
+      animateContentScale(
+        view: contentView,
+        from: fromScale,
+        to: 1.0,
+        duration: duration,
+        timing: timing
+      )
+    }
+
+    window.makeKeyAndOrderFront(nil)
+  }
+
+  private func animateWindowOut(_ window: NSWindow, style: WindowAnimationStyle) {
+    let timing: CAMediaTimingFunctionName = .easeInEaseOut
+    let duration: TimeInterval = style == .main ? 0.11 : 0.1
+    let toScale: CGFloat = style == .main ? 0.985 : 0.94
+
+    if let contentView = window.contentView {
+      contentView.wantsLayer = true
+      contentView.layer?.removeAllAnimations()
+      contentView.layer?.transform = CATransform3DIdentity
+      animateContentScale(
+        view: contentView,
+        from: 1.0,
+        to: toScale,
+        duration: duration,
+        timing: timing
+      )
+    }
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
+      window.orderOut(nil)
+      window.contentView?.layer?.transform = CATransform3DIdentity
+    }
+  }
+
+  private func animateContentScale(
+    view: NSView,
+    from: CGFloat,
+    to: CGFloat,
+    duration: TimeInterval,
+    timing: CAMediaTimingFunctionName
+  ) {
+    guard let layer = view.layer else {
+      return
+    }
+    let animation = CABasicAnimation(keyPath: "transform.scale")
+    animation.fromValue = from
+    animation.toValue = to
+    animation.duration = duration
+    animation.timingFunction = CAMediaTimingFunction(name: timing)
+    animation.fillMode = .forwards
+    animation.isRemovedOnCompletion = true
+    layer.add(animation, forKey: "stackle.scale")
+    layer.transform = CATransform3DMakeScale(to, to, 1)
   }
 
   private func ensureQuickAddPanel() {
