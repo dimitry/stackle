@@ -296,9 +296,13 @@ class _TodoRowState extends State<TodoRow> {
   }
 
   Widget _buildCategoryMenu(ThemeData theme) {
-    final swatch =
-        _categorySwatches[widget.todo.categoryId.hashCode.abs() %
-            _categorySwatches.length];
+    final categoryIndex = widget.categories.indexWhere(
+      (category) => category.id == widget.todo.categoryId,
+    );
+    final swatchIndex = categoryIndex >= 0
+        ? categoryIndex % _categorySwatches.length
+        : widget.todo.categoryId.hashCode.abs() % _categorySwatches.length;
+    final swatch = _categorySwatches[swatchIndex];
 
     return PopupMenuButton<String>(
       tooltip: '',
