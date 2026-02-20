@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'dart:ui';
 
 import '../models/category.dart';
 import '../state/app_controller.dart';
+import 'shared/frosted_surface.dart';
 
 class CategoryManagementDialog extends StatefulWidget {
   const CategoryManagementDialog({super.key, required this.controller});
@@ -217,7 +217,7 @@ class _CategoryManagementDialogState extends State<CategoryManagementDialog> {
   Future<void> _deleteCategory(Category category) async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => _FrostedDialogSurface(
+      builder: (context) => FrostedSurface(
         child: AlertDialog(
           backgroundColor: Colors.transparent,
           elevation: 0,
@@ -292,7 +292,7 @@ class _CategoryNameDialogState extends State<_CategoryNameDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return _FrostedDialogSurface(
+    return FrostedSurface(
       child: AlertDialog(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -321,29 +321,5 @@ class _CategoryNameDialogState extends State<_CategoryNameDialog> {
 
   void _submit() {
     Navigator.of(context).pop(_controller.text.trim());
-  }
-}
-
-class _FrostedDialogSurface extends StatelessWidget {
-  const _FrostedDialogSurface({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(14),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Container(
-          decoration: BoxDecoration(
-            color: const Color(0x80121212),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: const Color(0xFF2A2A2A)),
-          ),
-          child: child,
-        ),
-      ),
-    );
   }
 }
