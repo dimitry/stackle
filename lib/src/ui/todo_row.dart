@@ -95,14 +95,28 @@ class TodoRow extends StatefulWidget {
   State<TodoRow> createState() => _TodoRowState();
 }
 
-class _TodoRowState extends State<TodoRow> {
+class _TodoRowState extends State<TodoRow> with SingleTickerProviderStateMixin {
+  static const List<Color> _focusCycleColors = <Color>[
+    Color(0xFFC09A6A),
+    Color(0xFFB68F7C),
+    Color(0xFFAE938E),
+    Color(0xFF98A48A),
+    Color(0xFFB58C7E),
+  ];
+
   late final TextEditingController _controller;
+  late final AnimationController _focusColorController;
   bool _hovered = false;
 
   @override
   void initState() {
     super.initState();
     _controller = TextEditingController(text: widget.todo.text);
+    _focusColorController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 18),
+    )..addListener(_handleFocusColorTick);
+    _syncFocusColorAnimation();
   }
 
   @override
@@ -120,17 +134,58 @@ class _TodoRowState extends State<TodoRow> {
           extentOffset: widget.todo.text.length,
         );
     }
+
+    _syncFocusColorAnimation();
   }
 
   @override
   void dispose() {
+    _focusColorController
+      ..removeListener(_handleFocusColorTick)
+      ..dispose();
     _controller.dispose();
     super.dispose();
+  }
+
+  void _handleFocusColorTick() {
+    if (_shouldAnimateTopFocus && mounted) {
+      setState(() {});
+    }
+  }
+
+  bool get _shouldAnimateTopFocus =>
+      widget.priorityRank == 0 && !widget.isReordering;
+
+  void _syncFocusColorAnimation() {
+    if (_shouldAnimateTopFocus) {
+      if (!_focusColorController.isAnimating) {
+        _focusColorController.repeat();
+      }
+    } else {
+      if (_focusColorController.isAnimating) {
+        _focusColorController.stop();
+      }
+      _focusColorController.value = 0;
+    }
+  }
+
+  Color _focusAccentColor() {
+    final position = _focusColorController.value * _focusCycleColors.length;
+    final startIndex = position.floor() % _focusCycleColors.length;
+    final endIndex = (startIndex + 1) % _focusCycleColors.length;
+    final t = position - position.floor();
+    return Color.lerp(
+          _focusCycleColors[startIndex],
+          _focusCycleColors[endIndex],
+          t,
+        ) ??
+        _focusCycleColors.first;
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final focusAccent = _focusAccentColor();
     final Color rowColor;
     if (widget.isSelected) {
       rowColor = const Color(0xFF242424);
@@ -139,10 +194,23 @@ class _TodoRowState extends State<TodoRow> {
     } else {
       rowColor = const Color(0xFF171717);
     }
+    final isTopFocusTodo = widget.priorityRank == 0 && !widget.isReordering;
+    final borderColor = isTopFocusTodo
+        ? focusAccent.withValues(alpha: 0.5)
+        : const Color(0xFF2A2A2A);
     final rowDecoration = BoxDecoration(
       color: rowColor,
       borderRadius: BorderRadius.circular(10),
-      border: Border.all(color: const Color(0xFF2A2A2A)),
+      border: Border.all(color: borderColor),
+      boxShadow: isTopFocusTodo
+          ? <BoxShadow>[
+              BoxShadow(
+                color: focusAccent.withValues(alpha: 0.12),
+                blurRadius: 10,
+                spreadRadius: 0.5,
+              ),
+            ]
+          : null,
     );
 
     return MouseRegion(

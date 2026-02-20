@@ -34,12 +34,19 @@ private final class QuickAddTextField: NSTextField {
   }
 }
 
+private final class PassThroughVisualEffectView: NSVisualEffectView {
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    return nil
+  }
+}
+
 @main
 class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
   private enum WindowAnimationStyle {
     case main
     case quickAdd
   }
+  private let mainWindowBaseAlpha: CGFloat = 1.0
 
   private var statusItem: NSStatusItem?
   private let statusMenu = NSMenu()
@@ -59,6 +66,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
   private weak var flutterViewController: FlutterViewController?
   private var quickAddPanel: NSPanel?
   private weak var quickAddField: QuickAddTextField?
+  private weak var mainVibrancyView: NSVisualEffectView?
   private var startupHotkeyRetryWorkItems: [DispatchWorkItem] = []
 
   private var quickAddRegistrationStatus: OSStatus = -9999
@@ -137,9 +145,44 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     window.styleMask.insert(.fullSizeContentView)
     window.styleMask.remove(.resizable)
     window.isMovableByWindowBackground = true
+    window.isOpaque = false
+    window.backgroundColor = .clear
+    window.alphaValue = mainWindowBaseAlpha
+    window.hasShadow = true
+    installMainWindowVibrancyIfNeeded(window)
+    configureFlutterViewTransparency()
     window.standardWindowButton(.closeButton)?.isHidden = true
     window.standardWindowButton(.miniaturizeButton)?.isHidden = true
     window.standardWindowButton(.zoomButton)?.isHidden = true
+  }
+
+  private func installMainWindowVibrancyIfNeeded(_ window: NSWindow) {
+    guard let contentView = window.contentView else {
+      return
+    }
+    if let existing = mainVibrancyView {
+      existing.frame = contentView.bounds
+      return
+    }
+
+    let vibrancy = PassThroughVisualEffectView(frame: contentView.bounds)
+    vibrancy.autoresizingMask = [.width, .height]
+    vibrancy.blendingMode = .behindWindow
+    vibrancy.material = .sidebar
+    vibrancy.state = .active
+    vibrancy.alphaValue = 0.42
+
+    contentView.addSubview(vibrancy, positioned: .above, relativeTo: nil)
+    mainVibrancyView = vibrancy
+  }
+
+  private func configureFlutterViewTransparency() {
+    guard let flutterView = resolvedFlutterViewController()?.view else {
+      return
+    }
+    flutterView.wantsLayer = true
+    flutterView.layer?.isOpaque = false
+    flutterView.layer?.backgroundColor = NSColor.clear.cgColor
   }
 
   private func setupMethodChannel() {
@@ -959,6 +1002,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     }
 
     window.makeKeyAndOrderFront(nil)
+    if style == .main {
+      window.alphaValue = mainWindowBaseAlpha
+    }
   }
 
   private func animateWindowOut(_ window: NSWindow, style: WindowAnimationStyle) {
@@ -982,6 +1028,9 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
       window.orderOut(nil)
       window.contentView?.layer?.transform = CATransform3DIdentity
+      if style == .main {
+        window.alphaValue = self.mainWindowBaseAlpha
+      }
     }
   }
 
@@ -1023,7 +1072,7 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     panel.titleVisibility = .hidden
     panel.titlebarAppearsTransparent = true
-    panel.backgroundColor = NSColor(calibratedWhite: 0.06, alpha: 1.0)
+    panel.backgroundColor = .clear
     panel.isOpaque = false
     panel.hasShadow = true
     panel.standardWindowButton(.closeButton)?.isHidden = true
@@ -1031,7 +1080,13 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
     panel.standardWindowButton(.zoomButton)?.isHidden = true
     panel.delegate = self
 
-    let contentView = NSView(frame: panel.contentView?.bounds ?? .zero)
+    let contentView = NSVisualEffectView(frame: panel.contentView?.bounds ?? .zero)
+    contentView.autoresizingMask = [.width, .height]
+    contentView.blendingMode = .behindWindow
+    contentView.material = .sidebar
+    contentView.state = .active
+    contentView.wantsLayer = true
+    contentView.layer?.backgroundColor = NSColor(calibratedWhite: 0.07, alpha: 0.50).cgColor
 
     let input = QuickAddTextField(frame: .zero)
     input.font = NSFont(name: "Avenir Next", size: 20) ?? NSFont.systemFont(ofSize: 20, weight: .medium)

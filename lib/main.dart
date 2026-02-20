@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:async';
+import 'dart:ui';
 
 import 'src/models/todo_item.dart';
 import 'src/state/app_controller.dart';
 import 'src/ui/category_management_dialog.dart';
 import 'src/ui/todo_row.dart';
+
+const Color _mainSurfaceColor = Color(0x80121212);
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -44,7 +47,7 @@ class _StackleAppState extends State<StackleApp> {
         useMaterial3: true,
         brightness: Brightness.dark,
         fontFamily: 'Avenir Next',
-        scaffoldBackgroundColor: const Color(0xFF0B0B0B),
+        scaffoldBackgroundColor: _mainSurfaceColor,
         colorScheme:
             ColorScheme.fromSeed(
               seedColor: const Color(0xFF10B981),
@@ -252,7 +255,6 @@ class _MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<_MainScreen> {
-  static const double _topBarHeight = 48;
   static const double _listVerticalPadding = 16;
   static const double _todoRowExtent = 62;
   static const int _maxVisibleRows = 8;
@@ -264,12 +266,22 @@ class _MainScreenState extends State<_MainScreen> {
   _activeDeleteSnackBar;
   double? _lastRequestedWindowHeight;
   int? _lastWindowHeightTodoCount;
+  int _windowHeightRequestVersion = 0;
   Timer? _windowHeightDebounce;
+  bool _textInputFocused = false;
 
   AppController get _controller => widget.controller;
 
   @override
+  void initState() {
+    super.initState();
+    FocusManager.instance.addListener(_handleFocusChange);
+    _textInputFocused = _computeIsTextInputFocused();
+  }
+
+  @override
   void dispose() {
+    FocusManager.instance.removeListener(_handleFocusChange);
     _windowHeightDebounce?.cancel();
     super.dispose();
   }
@@ -278,23 +290,29 @@ class _MainScreenState extends State<_MainScreen> {
   Widget build(BuildContext context) {
     _scheduleWindowHeightSync();
     final selectedTodo = _selectedTodo;
-
-    return Shortcuts(
-      shortcuts: const <ShortcutActivator, Intent>{
-        SingleActivator(LogicalKeyboardKey.keyN, meta: true): _NewTodoIntent(),
-        SingleActivator(LogicalKeyboardKey.keyK, meta: true):
-            _OpenQuickAddIntent(),
-        SingleActivator(LogicalKeyboardKey.keyK, meta: true, shift: true):
-            _OpenQuickAddIntent(),
-        SingleActivator(LogicalKeyboardKey.keyT, meta: true, shift: true):
-            _ToggleWindowIntent(),
+    final shortcuts = <ShortcutActivator, Intent>{
+      const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
+          const _NewTodoIntent(),
+      const SingleActivator(LogicalKeyboardKey.keyK, meta: true):
+          const _OpenQuickAddIntent(),
+      const SingleActivator(LogicalKeyboardKey.keyK, meta: true, shift: true):
+          const _OpenQuickAddIntent(),
+      const SingleActivator(LogicalKeyboardKey.keyT, meta: true, shift: true):
+          const _ToggleWindowIntent(),
+      const SingleActivator(LogicalKeyboardKey.escape): const _EscapeIntent(),
+    };
+    if (_editingTodoId == null && !_textInputFocused) {
+      shortcuts.addAll(const <ShortcutActivator, Intent>{
         SingleActivator(LogicalKeyboardKey.delete): _DeleteSelectedTodoIntent(),
         SingleActivator(LogicalKeyboardKey.backspace):
             _DeleteSelectedTodoIntent(),
         SingleActivator(LogicalKeyboardKey.space): _ToggleTodoIntent(),
-        SingleActivator(LogicalKeyboardKey.escape): _EscapeIntent(),
         SingleActivator(LogicalKeyboardKey.enter): _BeginEditIntent(),
-      },
+      });
+    }
+
+    return Shortcuts(
+      shortcuts: shortcuts,
       child: Actions(
         actions: <Type, Action<Intent>>{
           _NewTodoIntent: CallbackAction<_NewTodoIntent>(
@@ -359,11 +377,16 @@ class _MainScreenState extends State<_MainScreen> {
         child: Focus(
           autofocus: true,
           child: Scaffold(
-            backgroundColor: const Color(0xFF0B0B0B),
+            backgroundColor: _mainSurfaceColor,
             body: Column(
               children: <Widget>[
-                _TopBar(
-                  selectedCategoryName: _selectedCategoryName,
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+                    child: _buildTodoList(),
+                  ),
+                ),
+                _FooterBar(
                   onOpenQuickAdd: () {
                     _controller.showQuickAddOverlay();
                   },
@@ -371,12 +394,6 @@ class _MainScreenState extends State<_MainScreen> {
                   onOpenCategoryManagement: () {
                     _openCategoryManagement();
                   },
-                ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
-                    child: _buildTodoList(),
-                  ),
                 ),
               ],
             ),
@@ -509,18 +526,40 @@ class _MainScreenState extends State<_MainScreen> {
   }
 
   bool get _isTextInputFocused {
+    return _textInputFocused;
+  }
+
+  bool _computeIsTextInputFocused() {
     final focusedContext = FocusManager.instance.primaryFocus?.context;
-    if (focusedContext == null) {
-      return false;
+    return focusedContext?.widget is EditableText;
+  }
+
+  void _handleFocusChange() {
+    final next = _computeIsTextInputFocused();
+    if (next != _textInputFocused && mounted) {
+      setState(() => _textInputFocused = next);
     }
-    return focusedContext.widget is EditableText;
   }
 
   Future<void> _openCategoryManagement() async {
-    await _showDialogWithExpandedWindow<void>(
-      minWindowHeight: _dialogMinWindowHeight,
-      builder: (_) => CategoryManagementDialog(controller: _controller),
+    await _controller.setMainWindowHeight(_dialogMinWindowHeight);
+    if (!mounted) {
+      return;
+    }
+    await Navigator.of(context).push<void>(
+      PageRouteBuilder<void>(
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            _CategoryManagementScreen(controller: _controller),
+        transitionsBuilder:
+            (context, animation, secondaryAnimation, child) => child,
+      ),
     );
+    if (!mounted) {
+      return;
+    }
+    _restoreMainWindowHeightAfterDialog();
   }
 
   void _scheduleWindowHeightSync() {
@@ -534,10 +573,14 @@ class _MainScreenState extends State<_MainScreen> {
       return;
     }
     _lastWindowHeightTodoCount = todoCount;
+    final requestVersion = ++_windowHeightRequestVersion;
 
     _windowHeightDebounce?.cancel();
     _windowHeightDebounce = Timer(const Duration(milliseconds: 180), () async {
       if (!mounted) {
+        return;
+      }
+      if (requestVersion != _windowHeightRequestVersion) {
         return;
       }
 
@@ -553,80 +596,80 @@ class _MainScreenState extends State<_MainScreen> {
   }
 
   double _targetWindowHeightForTodoCount(int count) {
+    const footerHeight = 48.0;
     const emptyStateHeight = 140.0;
     const bottomSlack = -2.0;
 
     if (count <= 0) {
-      return _topBarHeight + _listVerticalPadding + emptyStateHeight;
+      return footerHeight + _listVerticalPadding + emptyStateHeight;
     }
 
     final visibleRows = count.clamp(1, _maxVisibleRows);
-    return _topBarHeight +
+    return footerHeight +
         _listVerticalPadding +
         (visibleRows * _todoRowExtent) +
         bottomSlack;
-  }
-
-  String? get _selectedCategoryName {
-    final categoryId = _controller.selectedCategoryId;
-    if (categoryId == null) {
-      return null;
-    }
-    for (final category in _controller.categories) {
-      if (category.id == categoryId) {
-        return category.name;
-      }
-    }
-    return null;
   }
 
   Future<void> _openCategoryPicker() async {
     const allValue = '__all__';
     final selected = await _showDialogWithExpandedWindow<String>(
       minWindowHeight: _dialogMinWindowHeight,
+      restoreAfterDismiss: false,
       barrierColor: Colors.black.withValues(alpha: 0.4),
       builder: (context) {
         return Dialog(
-          backgroundColor: const Color(0xFF101010),
+          backgroundColor: Colors.transparent,
           elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-            side: const BorderSide(color: Color(0xFF272727)),
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 24,
           ),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 280, maxHeight: 360),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: ListView(
-                shrinkWrap: true,
-                children: <Widget>[
-                  _CategoryOptionTile(
-                    label: 'Todos',
-                    selected: _controller.selectedCategoryId == null,
-                    onTap: () => Navigator.of(context).pop(allValue),
-                  ),
-                  for (final category in _controller.categories)
+          child: _FrostedDialogSurface(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 280, maxHeight: 360),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: ListView(
+                  shrinkWrap: true,
+                  children: <Widget>[
                     _CategoryOptionTile(
-                      label: category.name,
-                      selected: _controller.selectedCategoryId == category.id,
-                      onTap: () => Navigator.of(context).pop(category.id),
+                      label: 'Todos',
+                      selected: _controller.selectedCategoryId == null,
+                      onTap: () => Navigator.of(context).pop(allValue),
                     ),
-                ],
+                    for (final category in _controller.categories)
+                      _CategoryOptionTile(
+                        label: category.name,
+                        selected: _controller.selectedCategoryId == category.id,
+                        onTap: () => Navigator.of(context).pop(category.id),
+                      ),
+                  ],
+                ),
               ),
             ),
           ),
         );
       },
     );
-    if (!mounted || selected == null) {
+    if (!mounted) {
+      return;
+    }
+    if (selected == null) {
+      _restoreMainWindowHeightAfterDialog();
       return;
     }
     await _controller.selectCategory(selected == allValue ? null : selected);
+    if (!mounted) {
+      return;
+    }
+    _restoreMainWindowHeightAfterDialog();
   }
 
   Future<T?> _showDialogWithExpandedWindow<T>({
     required WidgetBuilder builder,
     required double minWindowHeight,
+    bool restoreAfterDismiss = true,
     Color? barrierColor,
   }) async {
     await _controller.setMainWindowHeight(minWindowHeight);
@@ -644,7 +687,9 @@ class _MainScreenState extends State<_MainScreen> {
       return result;
     }
 
-    _restoreMainWindowHeightAfterDialog();
+    if (restoreAfterDismiss) {
+      _restoreMainWindowHeightAfterDialog();
+    }
     return result;
   }
 
@@ -665,61 +710,42 @@ class _MainScreenState extends State<_MainScreen> {
   }
 }
 
-class _TopBar extends StatelessWidget {
-  const _TopBar({
-    required this.selectedCategoryName,
+class _FooterBar extends StatelessWidget {
+  const _FooterBar({
     required this.onOpenQuickAdd,
     required this.onSelectCategory,
     required this.onOpenCategoryManagement,
   });
 
-  final String? selectedCategoryName;
   final VoidCallback onOpenQuickAdd;
   final VoidCallback onSelectCategory;
   final VoidCallback onOpenCategoryManagement;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Container(
       height: 48,
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0E0E0E),
-        border: Border(bottom: BorderSide(color: const Color(0xFF1D1D1D))),
-      ),
-      child: Center(
+      decoration: const BoxDecoration(color: Colors.transparent),
+      child: Align(
+        alignment: Alignment.topCenter,
         child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            Text(
-              selectedCategoryName == null
-                  ? 'Todos'
-                  : '${selectedCategoryName!} Todos',
-              textAlign: TextAlign.left,
-              style: theme.textTheme.labelLarge?.copyWith(
-                color: const Color(0xFFDADADA),
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0.1,
-                height: 1.0,
-              ),
-            ),
-            const Spacer(),
             _TopIconButton(
               onPressed: onSelectCategory,
               tooltip: 'Filter category',
               icon: Icons.tune_rounded,
               iconSize: 18,
             ),
-            const SizedBox(width: 4),
+            const SizedBox(width: 8),
             _TopIconButton(
               onPressed: onOpenQuickAdd,
               tooltip: 'Quick Add',
               icon: Icons.add_rounded,
               iconSize: 20,
             ),
-            const SizedBox(width: 4),
+            const SizedBox(width: 8),
             _TopIconButton(
               onPressed: onOpenCategoryManagement,
               tooltip: 'Manage categories',
@@ -749,14 +775,59 @@ class _TopIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 30,
-      height: 30,
+      width: 32,
+      height: 32,
       child: IconButton(
         onPressed: onPressed,
         tooltip: tooltip,
         padding: EdgeInsets.zero,
         visualDensity: VisualDensity.compact,
         icon: Icon(icon, size: iconSize),
+      ),
+    );
+  }
+}
+
+class _FrostedDialogSurface extends StatelessWidget {
+  const _FrostedDialogSurface({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0x80121212),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFF2A2A2A)),
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+class _CategoryManagementScreen extends StatelessWidget {
+  const _CategoryManagementScreen({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _mainSurfaceColor,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: _FrostedDialogSurface(
+            child: CategoryManagementDialog(controller: controller),
+          ),
+        ),
       ),
     );
   }

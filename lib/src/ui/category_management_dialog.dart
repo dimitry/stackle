@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:ui';
 
 import '../models/category.dart';
 import '../state/app_controller.dart';
@@ -29,85 +30,83 @@ class _CategoryManagementDialogState extends State<CategoryManagementDialog> {
     final categories = widget.controller.categories;
     final theme = Theme.of(context);
 
-    return AlertDialog(
-      title: const Text('Manage Categories'),
-      content: SizedBox(
-        width: 460,
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 520, maxHeight: 520),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            Flexible(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 280),
-                child: ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: categories.length,
-                  separatorBuilder: (context, index) =>
-                      const SizedBox(height: 8),
-                  itemBuilder: (context, index) {
-                    final category = categories[index];
-                    final isInbox = category.isInbox;
-                    return Container(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: theme.colorScheme.outlineVariant,
-                        ),
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      child: Row(
-                        children: <Widget>[
-                          Expanded(
-                            child: Text(
-                              category.name,
-                              style: theme.textTheme.bodyLarge,
-                            ),
-                          ),
-                          if (isInbox)
-                            Text(
-                              'Required',
-                              style: theme.textTheme.labelMedium?.copyWith(
-                                color: theme.colorScheme.secondary,
-                              ),
-                            )
-                          else ...<Widget>[
-                            TextButton(
-                              onPressed: _submitting
-                                  ? null
-                                  : () => _renameCategory(category),
-                              child: const Text('Rename'),
-                            ),
-                            TextButton(
-                              onPressed: _submitting
-                                  ? null
-                                  : () => _deleteCategory(category),
-                              style: TextButton.styleFrom(
-                                foregroundColor: theme.colorScheme.error,
-                              ),
-                              child: const Text('Delete'),
-                            ),
-                          ],
-                        ],
-                      ),
-                    );
-                  },
-                ),
+            Text(
+              'Manage Categories',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
               ),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: categories.length,
+              separatorBuilder: (context, index) => const SizedBox(height: 8),
+              itemBuilder: (context, index) {
+                final category = categories[index];
+                final isInbox = category.isInbox;
+                return Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: theme.colorScheme.outlineVariant),
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  child: Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: Text(
+                          category.name,
+                          style: theme.textTheme.bodyLarge,
+                        ),
+                      ),
+                      if (isInbox)
+                        Text(
+                          'Required',
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: theme.colorScheme.secondary,
+                          ),
+                        )
+                      else ...<Widget>[
+                        TextButton(
+                          onPressed: _submitting
+                              ? null
+                              : () => _renameCategory(category),
+                          child: const Text('Rename'),
+                        ),
+                        TextButton(
+                          onPressed: _submitting
+                              ? null
+                              : () => _deleteCategory(category),
+                          style: TextButton.styleFrom(
+                            foregroundColor: theme.colorScheme.error,
+                          ),
+                          child: const Text('Delete'),
+                        ),
+                      ],
+                    ],
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 12),
             if (categories.length == 1)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Text(
-                    'Only Inbox exists right now. Add a category to organize focused views.',
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: theme.colorScheme.secondary,
-                    ),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Text(
+                  'Only Inbox exists right now. Add a category to organize focused views.',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.secondary,
                   ),
                 ),
               ),
@@ -135,25 +134,26 @@ class _CategoryManagementDialogState extends State<CategoryManagementDialog> {
             if (_error != null)
               Padding(
                 padding: const EdgeInsets.only(top: 12),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    _error!,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.error,
-                    ),
+                child: Text(
+                  _error!,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
                   ),
                 ),
               ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: _submitting
+                    ? null
+                    : () => Navigator.of(context).pop(),
+                child: const Text('Close'),
+              ),
+            ),
           ],
         ),
       ),
-      actions: <Widget>[
-        TextButton(
-          onPressed: _submitting ? null : () => Navigator.of(context).pop(),
-          child: const Text('Close'),
-        ),
-      ],
     );
   }
 
@@ -217,23 +217,29 @@ class _CategoryManagementDialogState extends State<CategoryManagementDialog> {
   Future<void> _deleteCategory(Category category) async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Delete ${category.name}?'),
-        content: const Text('Todos in this category will move to Inbox.'),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFF3A1E1E),
-              foregroundColor: const Color(0xFFFFD8D8),
+      builder: (context) => _FrostedDialogSurface(
+        child: AlertDialog(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          shadowColor: Colors.transparent,
+          surfaceTintColor: Colors.transparent,
+          title: Text('Delete ${category.name}?'),
+          content: const Text('Todos in this category will move to Inbox.'),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
             ),
-            child: const Text('Delete'),
-          ),
-        ],
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF3A1E1E),
+                foregroundColor: const Color(0xFFFFD8D8),
+              ),
+              child: const Text('Delete'),
+            ),
+          ],
+        ),
       ),
     );
 
@@ -286,28 +292,58 @@ class _CategoryNameDialogState extends State<_CategoryNameDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(widget.title),
-      content: TextField(
-        controller: _controller,
-        autofocus: true,
-        decoration: const InputDecoration(
-          hintText: 'Category name',
-          isDense: true,
+    return _FrostedDialogSurface(
+      child: AlertDialog(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        shadowColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        title: Text(widget.title),
+        content: TextField(
+          controller: _controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Category name',
+            isDense: true,
+          ),
+          onSubmitted: (_) => _submit(),
         ),
-        onSubmitted: (_) => _submit(),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(onPressed: _submit, child: const Text('Save')),
+        ],
       ),
-      actions: <Widget>[
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: _submit, child: const Text('Save')),
-      ],
     );
   }
 
   void _submit() {
     Navigator.of(context).pop(_controller.text.trim());
+  }
+}
+
+class _FrostedDialogSurface extends StatelessWidget {
+  const _FrostedDialogSurface({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0x80121212),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFF2A2A2A)),
+          ),
+          child: child,
+        ),
+      ),
+    );
   }
 }
