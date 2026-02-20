@@ -49,7 +49,7 @@ class _CategoryManagementDialogState extends State<CategoryManagementDialog> {
                     final isInbox = category.isInbox;
                     return Container(
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(10),
                         border: Border.all(
                           color: theme.colorScheme.outlineVariant,
                         ),

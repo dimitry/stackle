@@ -254,12 +254,14 @@ class _MainScreen extends StatefulWidget {
 class _MainScreenState extends State<_MainScreen> {
   static const double _topBarHeight = 48;
   static const double _listVerticalPadding = 16;
-  static const double _todoRowExtent = 56;
+  static const double _todoRowExtent = 62;
   static const int _maxVisibleRows = 8;
   static const double _dialogMinWindowHeight = 460;
 
   String? _editingTodoId;
   bool _isReordering = false;
+  ScaffoldFeatureController<SnackBar, SnackBarClosedReason>?
+  _activeDeleteSnackBar;
   double? _lastRequestedWindowHeight;
   int? _lastWindowHeightTodoCount;
   Timer? _windowHeightDebounce;
@@ -416,7 +418,7 @@ class _MainScreenState extends State<_MainScreen> {
           key: ValueKey(todo.id),
           index: index,
           child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 2),
+            padding: const EdgeInsets.symmetric(vertical: 5),
             child: TodoRow(
               todo: todo,
               categories: _controller.categories,
@@ -463,12 +465,22 @@ class _MainScreenState extends State<_MainScreen> {
         ),
       ),
     );
+    _activeDeleteSnackBar = snackbarController;
+    unawaited(
+      snackbarController.closed.then((_) {
+        if (_activeDeleteSnackBar == snackbarController) {
+          _activeDeleteSnackBar = null;
+        }
+      }),
+    );
     unawaited(
       Future<void>.delayed(const Duration(seconds: 3), () {
         if (!mounted) {
           return;
         }
-        snackbarController.close();
+        if (_activeDeleteSnackBar == snackbarController) {
+          _activeDeleteSnackBar?.close();
+        }
       }),
     );
   }
@@ -542,7 +554,7 @@ class _MainScreenState extends State<_MainScreen> {
 
   double _targetWindowHeightForTodoCount(int count) {
     const emptyStateHeight = 140.0;
-    const bottomSlack = 2.0;
+    const bottomSlack = -2.0;
 
     if (count <= 0) {
       return _topBarHeight + _listVerticalPadding + emptyStateHeight;
@@ -632,10 +644,24 @@ class _MainScreenState extends State<_MainScreen> {
       return result;
     }
 
+    _restoreMainWindowHeightAfterDialog();
+    return result;
+  }
+
+  void _restoreMainWindowHeightAfterDialog() {
     _lastWindowHeightTodoCount = null;
     _windowHeightDebounce?.cancel();
-    _scheduleWindowHeightSync();
-    return result;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        return;
+      }
+      final targetHeight = _targetWindowHeightForTodoCount(
+        _controller.visibleTodos.length,
+      );
+      _lastRequestedWindowHeight = targetHeight;
+      await _controller.setMainWindowHeight(targetHeight);
+    });
   }
 }
 
@@ -785,31 +811,13 @@ class _EmptyState extends StatelessWidget {
     final inCategoryView = selectedCategoryId != null;
 
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: <Widget>[
-          Icon(
-            Icons.checklist_rounded,
-            size: 42,
-            color: theme.colorScheme.secondary,
-          ),
-          const SizedBox(height: 12),
-          Text(
-            inCategoryView
-                ? 'No todos in this category.'
-                : 'Add your first todo... Cmd+K',
-            style: theme.textTheme.titleMedium,
-          ),
-          const SizedBox(height: 6),
-          Text(
-            inCategoryView
-                ? 'Try another category or create a new item here.'
-                : 'Quick Add stays open for fast capture.',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.secondary,
-            ),
-          ),
-        ],
+      child: Text(
+        inCategoryView ? 'No todos in this category.' : 'Add your first todo.',
+        style: theme.textTheme.titleMedium?.copyWith(
+          color: const Color(0xFFBEBEBE),
+          fontSize: 15,
+          fontWeight: FontWeight.w500,
+        ),
       ),
     );
   }
@@ -847,7 +855,7 @@ class _DatabaseSelectionScreen extends StatelessWidget {
             padding: const EdgeInsets.all(28),
             decoration: BoxDecoration(
               color: theme.colorScheme.surface,
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(14),
               border: Border.all(color: theme.colorScheme.outlineVariant),
             ),
             child: Column(

@@ -139,28 +139,10 @@ class _TodoRowState extends State<TodoRow> {
     } else {
       rowColor = const Color(0xFF171717);
     }
-    final isTopPriority = widget.priorityRank < 3;
-    final accent = switch (widget.priorityRank) {
-      0 => const Color(0xFF5C91E8),
-      1 => const Color(0xFF52A88A),
-      2 => const Color(0xFFB58A52),
-      _ => const Color(0x00000000),
-    };
-
-    final showPriorityAccent = isTopPriority && !widget.isReordering;
     final rowDecoration = BoxDecoration(
       color: rowColor,
       borderRadius: BorderRadius.circular(10),
       border: Border.all(color: const Color(0xFF2A2A2A)),
-      boxShadow: showPriorityAccent
-          ? <BoxShadow>[
-              BoxShadow(
-                color: accent.withValues(alpha: 0.18),
-                blurRadius: 10,
-                spreadRadius: 0.5,
-              ),
-            ]
-          : null,
     );
 
     return MouseRegion(
@@ -179,41 +161,13 @@ class _TodoRowState extends State<TodoRow> {
                 ? Duration.zero
                 : const Duration(milliseconds: 180),
             curve: Curves.easeOutCubic,
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+            padding: const EdgeInsets.fromLTRB(4, 7, 8, 7),
             decoration: rowDecoration,
             child: Row(
               children: <Widget>[
-                AnimatedContainer(
-                  duration: widget.isReordering
-                      ? Duration.zero
-                      : const Duration(milliseconds: 180),
-                  curve: Curves.easeOutCubic,
-                  width: 2,
-                  height: 20,
-                  margin: const EdgeInsets.only(right: 8),
-                  decoration: BoxDecoration(
-                    color: showPriorityAccent
-                        ? accent.withValues(alpha: 0.92)
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-                TweenAnimationBuilder<double>(
-                  tween: Tween<double>(
-                    begin: 1,
-                    end: widget.todo.isCompleted ? 0.95 : 1,
-                  ),
-                  duration: const Duration(milliseconds: 140),
-                  curve: Curves.easeOutCubic,
-                  builder: (context, scale, child) =>
-                      Transform.scale(scale: scale, child: child),
-                  child: Checkbox(
-                    value: widget.todo.isCompleted,
-                    visualDensity: VisualDensity.compact,
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    onChanged: (value) =>
-                        widget.onToggleCompleted(value ?? false),
-                  ),
+                _AnimatedTodoCheckbox(
+                  value: widget.todo.isCompleted,
+                  onChanged: (value) => widget.onToggleCompleted(value),
                 ),
                 const SizedBox(width: 6),
                 Expanded(child: _buildText(theme)),
@@ -406,5 +360,63 @@ class _TodoRowState extends State<TodoRow> {
       default:
         break;
     }
+  }
+}
+
+class _AnimatedTodoCheckbox extends StatelessWidget {
+  const _AnimatedTodoCheckbox({required this.value, required this.onChanged});
+
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => onChanged(!value),
+      child: Padding(
+        padding: const EdgeInsets.all(2),
+        child: TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 1, end: value ? 1.06 : 1.0),
+          duration: const Duration(milliseconds: 170),
+          curve: Curves.easeOutBack,
+          builder: (context, scale, child) {
+            return Transform.scale(scale: scale, child: child);
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            curve: Curves.easeOutCubic,
+            width: 18,
+            height: 18,
+            decoration: BoxDecoration(
+              color: value ? const Color(0xFFEAEAEA) : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: value
+                    ? const Color(0xFFEAEAEA)
+                    : const Color(0xFF666666),
+                width: 1.4,
+              ),
+            ),
+            child: Center(
+              child: AnimatedScale(
+                duration: const Duration(milliseconds: 140),
+                curve: Curves.easeOutBack,
+                scale: value ? 1 : 0.6,
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 120),
+                  opacity: value ? 1 : 0,
+                  child: const Icon(
+                    Icons.check_rounded,
+                    size: 12,
+                    color: Color(0xFF111111),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

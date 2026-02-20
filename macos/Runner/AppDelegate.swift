@@ -925,9 +925,19 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
   }
 
   private func closeQuickAddPanel() {
-    if let panel = quickAddPanel {
-      animateWindowOut(panel, style: .quickAdd)
+    closeQuickAddPanel(immediately: false)
+  }
+
+  private func closeQuickAddPanel(immediately: Bool) {
+    guard let panel = quickAddPanel else {
+      return
     }
+    if immediately {
+      panel.orderOut(nil)
+      panel.contentView?.layer?.transform = CATransform3DIdentity
+      return
+    }
+    animateWindowOut(panel, style: .quickAdd)
   }
 
   private func animateWindowIn(_ window: NSWindow, style: WindowAnimationStyle) {
@@ -1052,7 +1062,8 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
 
   @objc private func handleQuickAddSubmit() {
     ensureFlutterBindingsReady()
-    guard let textField = quickAddField else {
+    guard let textField = quickAddField,
+          let panel = quickAddPanel else {
       return
     }
 
@@ -1061,7 +1072,8 @@ class AppDelegate: FlutterAppDelegate, NSWindowDelegate {
       return
     }
 
+    panel.makeFirstResponder(nil)
+    closeQuickAddPanel(immediately: true)
     methodChannel?.invokeMethod("quickAddSubmitted", arguments: text)
-    textField.stringValue = ""
   }
 }
